@@ -2,7 +2,7 @@
 
 把 **WP Super Cache 的页面静态化** 与 **Autoptimize 的前端资源优化** 合并进一个 WordPress 插件：一条输出缓冲管线，缓存里存的永远是「优化后」的 HTML。
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.1.1-blue)
 ![WordPress](https://img.shields.io/badge/WordPress-6.0%2B-21759b)
 ![PHP](https://img.shields.io/badge/PHP-7.4%2B-777bb4)
 ![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)
@@ -85,7 +85,7 @@ HCB_Output::handle()          ← 唯一的 ob_start
 
 1. 上传 `hcb-cache-boost` 目录到 `wp-content/plugins/`，或后台上传 zip。
 2. 启用插件。启用时自动创建缓存目录、写 `config.php`、尝试安装 `wp-content/advanced-cache.php`。
-3. **必须开启 `WP_CACHE`**，否则页面缓存完全不生效。到「缓存加速 → 工具」点「一键写入」（自动备份原 `wp-config.php`），或手工加：
+3. **必须开启 `WP_CACHE`**，否则页面缓存完全不生效。到「缓存加速 → 工具」点「一键写入」（原文件自动备份到 `wp-content/hcb-backups/`，该目录已禁止 HTTP 访问），或手工加：
 
    ```php
    define( 'WP_CACHE', true );
@@ -292,6 +292,11 @@ zip -r ../hcb-cache-boost.zip . -x ".git/*" -x "*.zip" -x "*.tar.gz"
 ---
 
 ## 十二、更新日志
+
+### 1.1.1
+
+- **安全修复**：`wp-config.php` 的备份不再写在网站根目录。旧版把副本存成 `wp-config.php.hcb.bak-时间戳`，该后缀不以 `.php` 结尾，Web 服务器不会执行而是原样输出源码——等于把数据库密码与 8 个 AUTH 密钥公开到公网。
+- 备份改存 `wp-content/hcb-backups/`，目录内自动写入拒绝 HTTP 访问的 `.htaccess`，文件名追加随机串，权限 `0600`。
 
 ### 1.1.0
 

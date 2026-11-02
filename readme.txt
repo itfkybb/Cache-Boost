@@ -3,7 +3,7 @@ Contributors: guohao
 Tags: cache, page cache, minify, combine css, combine js, lazy load
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -48,6 +48,10 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 不建议。检测到冲突插件时本插件会自动停用输出缓冲，避免两层缓存互相覆盖。
 
 == Changelog ==
+
+= 1.1.1 =
+* 安全修复：wp-config.php 的备份不再写在网站根目录。旧版把副本存为 wp-config.php.hcb.bak-时间戳，该后缀不会被 PHP 执行，可被直接下载并泄露数据库密码与 AUTH 密钥。
+* 备份改存 wp-content/hcb-backups/，目录内自动写入拒绝 HTTP 访问的 .htaccess，文件名追加随机串，权限 0600。
 
 = 1.1.0 =
 * 新增按文章定向失效（purge_scope=smart）：只清首页、本文、分类/标签、作者页、feed 与年度归档。

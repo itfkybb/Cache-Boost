@@ -3,7 +3,7 @@
  * Plugin Name:       Cache Boost 缓存加速
  * Plugin URI:        https://guohao.asia
  * Description:       把 WP Super Cache 的页面静态化缓存与 Autoptimize 的前端资源优化整合为一个插件：磁盘静态 HTML 缓存 + advanced-cache drop-in + CSS/JS 合并压缩 + 原生图片懒加载 + 缓存预加载。
- * Version:           1.1.0
+ * Version:           1.1.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            郭浩
@@ -23,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HCB_VERSION', '1.1.0' );
+define( 'HCB_VERSION', '1.1.1' );
 define( 'HCB_FILE', __FILE__ );
 define( 'HCB_DIR', plugin_dir_path( __FILE__ ) );
 

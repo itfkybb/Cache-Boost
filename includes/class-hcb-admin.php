@@ -95,7 +95,7 @@ class HCB_Admin {
 			'stats_reset'    => '统计数据已重置。',
 			'dropin_on'      => 'advanced-cache.php 已安装。',
 			'dropin_off'     => 'advanced-cache.php 已移除。',
-			'wp_cache_on'    => '已写入 WP_CACHE 常量，并已备份原 wp-config.php。',
+			'wp_cache_on'    => '已写入 WP_CACHE 常量，原文件已备份到 wp-content/hcb-backups/。',
 			'htaccess_on'    => '.htaccess 规则已写入。',
 			'htaccess_off'   => '.htaccess 规则已移除。',
 			'preloaded'      => '已发起预加载请求。',
@@ -520,7 +520,7 @@ class HCB_Admin {
 						<?php if ( ! HCB_Dropin::wp_cache_on() ) : ?>
 							<?php if ( HCB_Dropin::wp_config_writable() ) : ?>
 								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
-									onsubmit="return confirm('将修改 wp-config.php 并在同目录生成 .hcb.bak 备份文件，是否继续？');">
+									onsubmit="return confirm('将修改 wp-config.php，并把原文件备份到 wp-content/hcb-backups/，是否继续？');">
 									<?php wp_nonce_field( 'hcb_action' ); ?>
 									<input type="hidden" name="action" value="hcb_action">
 									<button class="button" name="do" value="enable_wp_cache">一键写入</button>
@@ -723,8 +723,8 @@ class HCB_Admin {
 			return 'config_done';
 		}
 
-		$backup = $file . '.hcb.bak-' . gmdate( 'YmdHis' );
-		if ( ! @copy( $file, $backup ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		$backup = self::backup_wp_config( $file );
+		if ( '' === $backup ) {
 			return 'failed';
 		}
 
@@ -738,6 +738,47 @@ class HCB_Admin {
 
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_file_put_contents
 		return ( false !== @file_put_contents( $file, $new ) ) ? 'wp_cache_on' : 'failed'; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+	}
+
+	/**
+	 * 把 wp-config.php 备份到不可通过 HTTP 访问的位置。
+	 *
+	 * 1.1.0 及更早版本把副本写在 wp-config.php 同目录（web 根），文件名形如
+	 * `wp-config.php.hcb.bak-20261102033730`。后缀不以 .php 结尾，Apache 不会执行，
+	 * 而是把文件当文本原样输出——等于把数据库密码与全部 AUTH 密钥公开到公网。
+	 *
+	 * 现在改为写入 wp-content/hcb-backups/：目录内自动生成拒绝访问的 .htaccess，
+	 * 文件名追加 8 位随机串，文件权限 0600。
+	 *
+	 * @param string $file wp-config.php 的绝对路径。
+	 * @return string 备份文件路径；失败返回空串。
+	 */
+	private static function backup_wp_config( $file ) {
+		$dir = WP_CONTENT_DIR . '/hcb-backups';
+
+		if ( ! is_dir( $dir ) && ! @mkdir( $dir, 0700, true ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			return '';
+		}
+
+		// 双保险：即使文件名被猜到，也拒绝 HTTP 直接下载。
+		$htaccess = $dir . '/.htaccess';
+		if ( ! file_exists( $htaccess ) ) {
+			$rules = "<IfModule mod_authz_core.c>\n\tRequire all denied\n</IfModule>\n"
+				. "<IfModule !mod_authz_core.c>\n\tOrder deny,allow\n\tDeny from all\n</IfModule>\n";
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_file_put_contents,WordPress.PHP.NoSilencedErrors.Discouraged
+			@file_put_contents( $htaccess, $rules );
+		}
+
+		$name = 'wp-config-' . gmdate( 'YmdHis' ) . '-' . wp_generate_password( 8, false, false ) . '.bak';
+		$dest = $dir . '/' . $name;
+
+		if ( ! @copy( $file, $dest ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			return '';
+		}
+
+		@chmod( $dest, 0600 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+		return $dest;
 	}
 
 	/**
