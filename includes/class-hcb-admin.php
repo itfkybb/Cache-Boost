@@ -90,6 +90,7 @@ class HCB_Admin {
 		$success = array(
 			'saved'          => '设置已保存。',
 			'purged'         => '页面缓存已清空。',
+			'purged_page'    => '本页缓存已清理。',
 			'assets_purged'  => '合并后的 CSS/JS 已清理。',
 			'stats_reset'    => '统计数据已重置。',
 			'dropin_on'      => 'advanced-cache.php 已安装。',
@@ -190,11 +191,30 @@ class HCB_Admin {
 	 */
 	private static function view_overview() {
 		$stats  = HCB_Dropin::stats();
-		$pages  = HCB_Filesystem::dir_stats( HCB_Settings::page_dir() );
-		$assets = HCB_Filesystem::dir_stats( HCB_Settings::asset_dir() );
+		$sizes = get_transient( 'hcb_dir_stats' );
 
-		$total   = (int) $stats['hits'] + (int) $stats['stored'];
+		if ( ! is_array( $sizes ) || ! isset( $sizes['pages'], $sizes['assets'] ) ) {
+			$sizes = array(
+				'pages'  => HCB_Filesystem::dir_stats( HCB_Settings::page_dir() ),
+				'assets' => HCB_Filesystem::dir_stats( HCB_Settings::asset_dir() ),
+			);
+			set_transient( 'hcb_dir_stats', $sizes, 60 );
+		}
+
+		$pages  = $sizes['pages'];
+		$assets = $sizes['assets'];
+
+		$total   = (int) $stats['hits'] + (int) $stats['miss'];
 		$hitrate = $total > 0 ? round( ( (int) $stats['hits'] / $total ) * 100, 1 ) : 0;
+
+		$trend = ( isset( $stats['trend'] ) && is_array( $stats['trend'] ) ) ? $stats['trend'] : array();
+		ksort( $trend );
+		$trend = array_slice( $trend, -7, 7, true );
+		$trend_parts = array();
+		foreach ( $trend as $trend_day => $trend_n ) {
+			$trend_parts[] = substr( (string) $trend_day, 5 ) . ' ' . (int) $trend_n;
+		}
+		$trend_text = $trend_parts ? implode( ' · ', $trend_parts ) : '—';
 
 		$dropin_state = '未安装';
 		if ( HCB_Dropin::is_ours() ) {
@@ -205,6 +225,9 @@ class HCB_Admin {
 
 		$rows = array(
 			'缓存命中'        => number_format_i18n( $stats['hits'] ) . ' 次',
+			'缓存未命中'      => number_format_i18n( $stats['miss'] ) . ' 次',
+			'节省传输'        => HCB_Filesystem::format_bytes( (int) $stats['bytes'] ),
+			'近 7 日命中'     => $trend_text,
 			'写入缓存'        => number_format_i18n( $stats['stored'] ) . ' 次',
 			'命中率'          => $hitrate . ' %',
 			'缓存页面数'      => number_format_i18n( $pages['files'] ) . ' 个文件 / ' . HCB_Filesystem::format_bytes( $pages['bytes'] ),
@@ -314,6 +337,14 @@ class HCB_Admin {
 					</td>
 				</tr>
 				<tr>
+					<th scope="row">清理范围</th>
+					<td>
+						<label><input type="radio" name="purge_scope" value="all" <?php checked( 'all', $o['purge_scope'] ); ?>> 全量清理（最安全）</label><br>
+						<label><input type="radio" name="purge_scope" value="smart" <?php checked( 'smart', $o['purge_scope'] ); ?>> 定向清理（只清首页、本文、所属分类/标签、作者页、feed）</label>
+						<p class="description">定向清理能显著减少发布时的缓存抖动，但如果页面里有「最新文章」「随机推荐」这类跨文章模块，可能出现短暂滞后。</p>
+					</td>
+				</tr>
+				<tr>
 					<th scope="row"><label for="exclude_paths">排除路径</label></th>
 					<td>
 						<textarea id="exclude_paths" name="exclude_paths" rows="6" class="large-text code"><?php echo esc_textarea( $o['exclude_paths'] ); ?></textarea>
@@ -363,7 +394,8 @@ class HCB_Admin {
 					<th scope="row">内联压缩</th>
 					<td>
 						<label><input type="checkbox" name="minify_inline_css" value="1" <?php checked( 1, (int) $o['minify_inline_css'] ); ?>> 压缩内联 <code>&lt;style&gt;</code></label><br>
-						<label><input type="checkbox" name="minify_inline_js" value="1" <?php checked( 1, (int) $o['minify_inline_js'] ); ?>> 压缩内联 <code>&lt;script&gt;</code></label>
+						<label><input type="checkbox" name="minify_inline_js" value="1" <?php checked( 1, (int) $o['minify_inline_js'] ); ?>> 压缩内联 <code>&lt;script&gt;</code></label><br>
+						<label><input type="checkbox" name="minify_html" value="1" <?php checked( 1, (int) $o['minify_html'] ); ?>> 压缩 HTML（删注释与标签间缩进）</label>
 						<p class="description">JS 压缩只删注释与缩进、不删换行，避免触发分号自动插入（ASI）语义变化。仍建议先在测试环境验证。</p>
 					</td>
 				</tr>
@@ -597,10 +629,18 @@ class HCB_Admin {
 
 		check_admin_referer( 'hcb_action' );
 
-		$do = isset( $_POST['do'] ) ? sanitize_key( wp_unslash( $_POST['do'] ) ) : '';
-		$msg = 'failed';
+		$do = isset( $_REQUEST['do'] ) ? sanitize_key( wp_unslash( $_REQUEST['do'] ) ) : '';
+		$msg      = 'failed';
+		$redirect = '';
+		$raw_url  = isset( $_REQUEST['url'] ) ? (string) wp_unslash( $_REQUEST['url'] ) : '';
 
 		switch ( $do ) {
+			case 'purge_current':
+				HCB_Page_Cache::purge_url( $raw_url );
+				$msg      = 'purged_page';
+				$redirect = home_url( HCB_Page_Cache::normalize_path( $raw_url ) );
+				break;
+
 			case 'purge_all':
 				HCB_Page_Cache::purge_all();
 				$msg = 'purged';
@@ -651,7 +691,11 @@ class HCB_Admin {
 				break;
 		}
 
-		wp_safe_redirect( self::url( 'tools', array( 'hcb_msg' => $msg ) ) );
+		if ( '' !== $redirect ) {
+			wp_safe_redirect( $redirect );
+		} else {
+			wp_safe_redirect( self::url( 'tools', array( 'hcb_msg' => $msg ) ) );
+		}
 		exit;
 	}
 
@@ -749,14 +793,14 @@ class HCB_Admin {
 			'</IfModule>',
 			'<IfModule mod_headers.c>',
 			'<FilesMatch "\.(css|js|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot)$">',
-			'Header set Cache-Control "public"',
+			'Header set Cache-Control "public, max-age=2592000"',
 			'</FilesMatch>',
 			'<FilesMatch "^gcb-.*\.(css|js)$">',
 			'Header set Cache-Control "public, max-age=31536000, immutable"',
 			'</FilesMatch>',
 			'</IfModule>',
 			'<IfModule mod_deflate.c>',
-			'AddOutputFilterByType DEFLATE text/css application/javascript application/json image/svg+xml',
+			'AddOutputFilterByType DEFLATE text/css text/javascript application/javascript application/json image/svg+xml',
 			'</IfModule>',
 			'# 合并资源目录：' . $rel,
 		);

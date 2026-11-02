@@ -36,9 +36,10 @@ class HCB_Settings {
 			'cache_ttl'         => 3600,
 			'cache_gzip'        => 1,
 			'cache_query'       => 0,
-			'cache_client_ttl'  => 0,
+			'cache_client_ttl'  => 60,
 			'track_stats'       => 1,
-			'purge_on_publish'  => 1,
+'purge_on_publish'  => 1,
+			'purge_scope'       => 'all',
 			'exclude_paths'     => "/wp-admin\n/wp-login.php\n/wp-json\n/cart\n/checkout\n/my-account",
 			'preload_enabled'   => 0,
 			'preload_batch'     => 5,
@@ -47,6 +48,7 @@ class HCB_Settings {
 			'assets_enabled'    => 1,
 			'minify_inline_css' => 1,
 			'minify_inline_js'  => 0,
+			'minify_html'       => 1,
 			'merge_css'         => 1,
 			'merge_js'          => 1,
 			'minify_merged'     => 1,
@@ -103,6 +105,7 @@ class HCB_Settings {
 				'cache_client_ttl',
 				'track_stats',
 				'purge_on_publish',
+				'purge_scope',
 				'exclude_paths',
 				'preload_enabled',
 				'preload_batch',
@@ -111,6 +114,7 @@ class HCB_Settings {
 				'assets_enabled',
 				'minify_inline_css',
 				'minify_inline_js',
+				'minify_html',
 				'merge_css',
 				'merge_js',
 				'minify_merged',
@@ -141,6 +145,7 @@ class HCB_Settings {
 			'assets_enabled',
 			'minify_inline_css',
 			'minify_inline_js',
+			'minify_html',
 			'merge_css',
 			'merge_js',
 			'minify_merged',
@@ -190,6 +195,10 @@ class HCB_Settings {
 		}
 		if ( in_array( 'preload_batch', $keys, true ) ) {
 			$out['preload_batch'] = self::clamp( $input, 'preload_batch', 1, 20, 5 );
+		}
+		if ( in_array( 'purge_scope', $keys, true ) ) {
+			$scope              = isset( $input['purge_scope'] ) ? sanitize_key( $input['purge_scope'] ) : 'all';
+			$out['purge_scope']  = in_array( $scope, array( 'all', 'smart' ), true ) ? $scope : 'all';
 		}
 
 		foreach ( array( 'exclude_paths', 'exclude_css', 'exclude_js' ) as $key ) {

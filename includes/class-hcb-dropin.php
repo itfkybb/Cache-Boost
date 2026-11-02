@@ -245,10 +245,13 @@ class HCB_Dropin {
 	 *
 	 * @return array{hits:int,stored:int}
 	 */
-	public static function stats() {
+		public static function stats() {
 		$empty = array(
 			'hits'   => 0,
 			'stored' => 0,
+			'miss'   => 0,
+			'bytes'  => 0,
+			'trend'  => array(),
 		);
 
 		$file = HCB_Settings::stats_file();
@@ -264,28 +267,82 @@ class HCB_Dropin {
 		return array(
 			'hits'   => isset( $data['hits'] ) ? (int) $data['hits'] : 0,
 			'stored' => isset( $data['stored'] ) ? (int) $data['stored'] : 0,
+			'miss'   => isset( $data['miss'] ) ? (int) $data['miss'] : 0,
+			'bytes'  => isset( $data['bytes'] ) ? (int) $data['bytes'] : 0,
+			'trend'  => ( isset( $data['trend'] ) && is_array( $data['trend'] ) ) ? $data['trend'] : array(),
 		);
 	}
 
 	/**
-	 * 累加写入计数（由插件侧调用，命中计数在 drop-in 里做）。
+	 * 累加某个计数。
 	 *
+	 * @param string $key 键名：hits / stored / miss / bytes。
+	 * @param int    $by  增量。
 	 * @return void
 	 */
-	public static function bump_stored() {
+	public static function bump( $key, $by = 1 ) {
 		if ( ! HCB_Settings::get( 'track_stats' ) ) {
 			return;
 		}
 
-		$stats          = self::stats();
-		$stats['stored'] = $stats['stored'] + 1;
+		if ( ! in_array( $key, array( 'hits', 'stored', 'miss', 'bytes' ), true ) ) {
+			return;
+		}
+
+		$file = HCB_Settings::stats_file();
+		$fp   = @fopen( $file, 'c+' );
+
+		if ( ! $fp ) {
+			return;
+		}
+
+		if ( ! @flock( $fp, LOCK_EX ) ) {
+			fclose( $fp );
+			return;
+		}
+
+		$raw   = (string) stream_get_contents( $fp );
+		$parsed = null;
+		$p1    = strpos( $raw, '{"' );
+		$p2    = strrpos( $raw, '}' );
+
+		if ( false !== $p1 && false !== $p2 && $p2 > $p1 ) {
+			$parsed = json_decode( substr( $raw, $p1, $p2 - $p1 + 1 ), true );
+		}
+
+		$stats = array(
+			'hits'   => 0,
+			'stored' => 0,
+			'miss'   => 0,
+			'bytes'  => 0,
+			'trend'  => array(),
+		);
+
+		if ( is_array( $parsed ) ) {
+			$stats = array_merge( $stats, $parsed );
+		}
+
+		$stats[ $key ] = (int) $stats[ $key ] + (int) $by;
 
 		$body = "<?php\n// " . self::MARKER . " 统计文件\nif ( ! defined( 'ABSPATH' ) ) { exit; }\n"
-			. 'return ' . var_export( $stats, true ) . ";\n"; // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_var_export
+			. "return json_decode( '" . str_replace( "'", "\\'", (string) wp_json_encode( $stats ) ) . "', true );\n";
 
-		HCB_Filesystem::write_atomic( HCB_Settings::stats_file(), $body );
+		ftruncate( $fp, 0 );
+		rewind( $fp );
+		fwrite( $fp, $body );
+		fflush( $fp );
+		flock( $fp, LOCK_UN );
+		fclose( $fp );
 	}
 
+	/**
+	 * 写入计数。
+	 *
+	 * @return void
+	 */
+	public static function bump_stored() {
+		self::bump( 'stored' );
+	}
 	/**
 	 * 重置统计。
 	 *
@@ -410,6 +467,12 @@ $hcb_key  = md5( $hcb_host . '|' . $hcb_path );
 $hcb_dir  = rtrim( $hcb['cache_dir'], '/\\' ) . DIRECTORY_SEPARATOR . $hcb_key;
 $hcb_file = $hcb_dir . DIRECTORY_SEPARATOR . 'index.html';
 
+/* 主动重建：带此标记的请求跳过命中，交给 WordPress 重新生成。
+   旧缓存文件在重建完成前保持可用，不会出现空窗。 */
+if ( ! empty( $_SERVER['HTTP_X_HCB_REBUILD'] ) ) {
+	return;
+}
+
 if ( ! file_exists( $hcb_file ) ) {
 	return;
 }
@@ -466,32 +529,71 @@ if ( ! headers_sent() ) {
 	}
 }
 
-/* 命中计数：加锁写，失败静默 */
+/* 命中计数：加锁写，失败静默。统计文件是 PHP + JSON，两边共用同一份结构。 */
 if ( ! empty( $hcb['track'] ) && ! empty( $hcb['stats'] ) ) {
 	$hcb_fp = @fopen( $hcb['stats'], 'c+' );
-	if ( $hcb_fp ) {
-		if ( @flock( $hcb_fp, LOCK_EX ) ) {
-			$hcb_raw     = stream_get_contents( $hcb_fp );
-			$hcb_hits    = 0;
-			$hcb_stored  = 0;
-			if ( is_string( $hcb_raw ) && preg_match( '/hits[^0-9]+(\d+)/', $hcb_raw, $hcb_m1 ) ) {
-				$hcb_hits = (int) $hcb_m1[1];
+	if ( $hcb_fp && @flock( $hcb_fp, LOCK_EX ) ) {
+		$hcb_raw = stream_get_contents( $hcb_fp );
+		$hcb_st  = array(
+			'hits'   => 0,
+			'stored' => 0,
+			'miss'   => 0,
+			'bytes'  => 0,
+			'trend'  => array(),
+		);
+
+		$hcb_dec = null;
+		if ( is_string( $hcb_raw ) ) {
+			$hcb_p1 = strpos( $hcb_raw, '{"' );
+			$hcb_p2 = strrpos( $hcb_raw, '}' );
+			if ( false !== $hcb_p1 && false !== $hcb_p2 && $hcb_p2 > $hcb_p1 ) {
+				$hcb_dec = json_decode( substr( $hcb_raw, $hcb_p1, $hcb_p2 - $hcb_p1 + 1 ), true );
 			}
-			if ( is_string( $hcb_raw ) && preg_match( '/stored[^0-9]+(\d+)/', $hcb_raw, $hcb_m2 ) ) {
-				$hcb_stored = (int) $hcb_m2[1];
+		}
+
+		if ( is_array( $hcb_dec ) ) {
+			$hcb_st = array_merge( $hcb_st, $hcb_dec );
+		} elseif ( is_string( $hcb_raw ) ) {
+			/* 兼容旧格式：return array( 'hits' => 1, 'stored' => 2 ); */
+			if ( preg_match( '/hits[^0-9]+(\d+)/', $hcb_raw, $hcb_m1 ) ) {
+				$hcb_st['hits'] = (int) $hcb_m1[1];
 			}
-			$hcb_payload = "<?php\n// HCB-ADVANCED-CACHE 统计文件\nif ( ! defined( 'ABSPATH' ) ) { exit; }\nreturn array( 'hits' => "
-				. ( $hcb_hits + 1 ) . ", 'stored' => " . $hcb_stored . " );\n";
+			if ( preg_match( '/stored[^0-9]+(\d+)/', $hcb_raw, $hcb_m2 ) ) {
+				$hcb_st['stored'] = (int) $hcb_m2[1];
+			}
+		}
+
+		if ( ! isset( $hcb_st['trend'] ) || ! is_array( $hcb_st['trend'] ) ) {
+			$hcb_st['trend'] = array();
+		}
+
+		$hcb_st['hits']  = (int) $hcb_st['hits'] + 1;
+		$hcb_st['bytes'] = (int) $hcb_st['bytes'] + (int) @filesize( $hcb_file );
+
+		$hcb_day = date( 'Y-m-d' );
+		if ( ! isset( $hcb_st['trend'][ $hcb_day ] ) ) {
+			$hcb_st['trend'][ $hcb_day ] = 0;
+		}
+		$hcb_st['trend'][ $hcb_day ] = (int) $hcb_st['trend'][ $hcb_day ] + 1;
+		if ( count( $hcb_st['trend'] ) > 30 ) {
+			$hcb_st['trend'] = array_slice( $hcb_st['trend'], -30, 30, true );
+		}
+
+		$hcb_json = json_encode( $hcb_st );
+		if ( false !== $hcb_json ) {
+			$hcb_payload = "<?php\n// HCB-ADVANCED-CACHE 统计文件\nif ( ! defined( 'ABSPATH' ) ) { exit; }\n"
+				. "return json_decode( '" . str_replace( "'", "\\'", $hcb_json ) . "', true );\n";
 			ftruncate( $hcb_fp, 0 );
 			rewind( $hcb_fp );
 			fwrite( $hcb_fp, $hcb_payload );
 			fflush( $hcb_fp );
-			flock( $hcb_fp, LOCK_UN );
 		}
+		flock( $hcb_fp, LOCK_UN );
+	}
+	if ( $hcb_fp ) {
 		fclose( $hcb_fp );
 	}
 }
-
 if ( 'HEAD' === $hcb_method ) {
 	exit;
 }

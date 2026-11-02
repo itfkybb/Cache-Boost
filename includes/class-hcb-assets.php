@@ -79,6 +79,50 @@ class HCB_Assets {
 			$html = self::strip_query( $html );
 		}
 
+		if ( ! empty( $o['minify_html'] ) ) {
+			$html = self::minify_html( $html );
+		}
+
+		return $html;
+	}
+
+	/**
+	 * 保守压缩 HTML。
+	 *
+	 * 只做三件事：删普通注释、把标签之间的换行缩进压成一个空格、去掉行尾空白。
+	 * pre / textarea / script / style 整块先摘出来，原样放回，绝不改动其内容，
+	 * 因此不会出现「内联脚本被压坏」那类问题。
+	 *
+	 * @param string $html HTML。
+	 * @return string
+	 */
+	private static function minify_html( $html ) {
+		$blocks = array();
+
+		$html = preg_replace_callback(
+			'#<(pre|textarea|script|style)\b[^>]*>.*?</\1>#is',
+			static function ( $m ) use ( &$blocks ) {
+				$k            = "\x1AHCB" . count( $blocks ) . "\x1A";
+				$blocks[ $k ] = $m[0];
+				return $k;
+			},
+			$html
+		);
+
+		if ( ! is_string( $html ) ) {
+			return $html;
+		}
+
+		/* 普通注释删掉；条件注释 <!--[if ...]> 保留 */
+		$html = preg_replace( '#<!--(?!\[if)(?!<!\[endif\]).*?-->#s', '', $html );
+
+		/* 标签之间：换行 + 缩进 -> 单个空格，inline 元素间距语义不变 */
+		$html = preg_replace( '#>\s+<#', '> <', $html );
+
+		if ( $blocks ) {
+			$html = strtr( $html, $blocks );
+		}
+
 		return $html;
 	}
 
@@ -439,13 +483,35 @@ class HCB_Assets {
 	 * @return string
 	 */
 	private static function strip_query( $html ) {
+		// 先摘出脚本/样式块，避免把内联代码里的 ".js?ver=1" 也改掉。
+		$blocks = array();
+
+		$html = preg_replace_callback(
+			'#<(script|style|pre|textarea)\b[^>]*>.*?</\1>#is',
+			static function ( $m ) use ( &$blocks ) {
+				$k            = "\x1AHCBSQ" . count( $blocks ) . "\x1A";
+				$blocks[ $k ] = $m[0];
+				return $k;
+			},
+			$html
+		);
+
+		if ( ! is_string( $html ) ) {
+			return $html;
+		}
+
 		$result = preg_replace(
 			'#(\.(?:css|js|jpe?g|png|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot))\?ver=[^"\'\s>]+#i',
 			'$1',
 			$html
 		);
 
-		return is_string( $result ) ? $result : $html;
+		if ( ! is_string( $result ) ) {
+			return $blocks ? strtr( $html, $blocks ) : $html;
+		}
+
+		return $blocks ? strtr( $result, $blocks ) : $result;
+
 	}
 
 	/* ---------------------------------------------------------------------

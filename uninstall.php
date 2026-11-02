@@ -58,7 +58,10 @@ if ( function_exists( 'insert_with_markers' ) && file_exists( ABSPATH . '.htacce
 // 4. 清理选项与定时任务。
 delete_option( 'hcb_settings' );
 delete_option( 'hcb_version' );
+delete_option( 'hcb_config_hash' );
+delete_transient( 'hcb_dir_stats' );
 delete_transient( 'hcb_activated' );
 
 wp_clear_scheduled_hook( 'hcb_cleanup' );
 wp_clear_scheduled_hook( 'hcb_preload' );
+wp_clear_scheduled_hook( 'hcb_refresh' );

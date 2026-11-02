@@ -23,7 +23,8 @@ class HCB_Page_Cache {
 	 */
 	public static function register_hooks() {
 		add_action( 'save_post', array( __CLASS__, 'on_save_post' ), 10, 3 );
-		add_action( 'deleted_post', array( __CLASS__, 'on_deleted_post' ) );
+		add_action( 'transition_post_status', array( __CLASS__, 'on_transition_post_status' ), 10, 3 );
+		add_action( 'deleted_post', array( __CLASS__, 'on_deleted_post' ), 10, 2 );
 		add_action( 'switch_theme', array( __CLASS__, 'purge_all' ) );
 		add_action( 'wp_update_nav_menu', array( __CLASS__, 'purge_all' ) );
 		add_action( 'customize_save_after', array( __CLASS__, 'purge_all' ) );
@@ -39,8 +40,15 @@ class HCB_Page_Cache {
 	 * @return string
 	 */
 	public static function normalize_path( $uri ) {
-		$parts = explode( '?', (string) $uri, 2 );
+		$uri   = (string) $uri;
+		$parts = explode( '?', $uri, 2 );
 		$path  = $parts[0];
+
+		// 传入完整 URL（后台栏 / CLI / 定向清理）时只取路径部分，否则会拼出 /https://... 这种坏键。
+		if ( preg_match( '#^https?://#i', $path ) ) {
+			$parsed = wp_parse_url( $path );
+			$path   = isset( $parsed['path'] ) ? (string) $parsed['path'] : '/';
+		}
 
 		if ( '' === $path ) {
 			$path = '/';
@@ -205,6 +213,9 @@ class HCB_Page_Cache {
 			}
 		}
 
+		/* 走到这里说明是可缓存请求但没命中，计一次 miss */
+		HCB_Dropin::bump( 'miss' );
+
 		$key = self::current_key();
 		$dir = HCB_Settings::page_dir() . '/' . $key;
 
@@ -275,7 +286,7 @@ class HCB_Page_Cache {
 			}
 		}
 
-		HCB_Dropin::reset_stats();
+delete_transient( 'hcb_dir_stats' );
 	}
 
 	/**
@@ -299,13 +310,47 @@ class HCB_Page_Cache {
 	 * @return void
 	 */
 	public static function on_save_post( $post_id, $post = null, $update = false ) {
-		unset( $post, $update );
+		unset( $update );
 
 		if ( ! HCB_Settings::get( 'purge_on_publish' ) ) {
 			return;
 		}
 
 		if ( ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) || wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+			return;
+		}
+
+		$hcb_status = ( $post instanceof WP_Post ) ? $post->post_status : get_post_status( $post_id );
+		if ( 'publish' !== $hcb_status ) {
+			return;
+		}
+
+		$hcb_warm = HCB_Purge::for_post( $post_id, $post );
+
+		if ( $hcb_warm && class_exists( 'HCB_Cron' ) ) {
+			HCB_Cron::warm( $hcb_warm );
+
+		}
+	}
+
+	/**
+	 * 文章状态变化后清理：覆盖「已发布 → 草稿/私密/回收站」的旧缓存滞留。
+	 *
+	 * @param string  $new_status 新状态。
+	 * @param string  $old_status 旧状态。
+	 * @param WP_Post $post       文章对象。
+	 * @return void
+	 */
+	public static function on_transition_post_status( $new_status, $old_status, $post ) {
+		if ( ! HCB_Settings::get( 'purge_on_publish' ) ) {
+			return;
+		}
+
+		if ( 'publish' !== $old_status || 'publish' === $new_status ) {
+			return;
+		}
+
+		if ( $post instanceof WP_Post && ( wp_is_post_revision( $post ) || wp_is_post_autosave( $post ) ) ) {
 			return;
 		}
 
@@ -318,8 +363,12 @@ class HCB_Page_Cache {
 	 * @param int $post_id 文章 ID。
 	 * @return void
 	 */
-	public static function on_deleted_post( $post_id ) {
+	public static function on_deleted_post( $post_id, $post = null ) {
 		if ( ! HCB_Settings::get( 'purge_on_publish' ) ) {
+			return;
+		}
+
+		if ( $post instanceof WP_Post && 'publish' !== $post->post_status ) {
 			return;
 		}
 		unset( $post_id );

@@ -3,7 +3,7 @@
  * Plugin Name:       Cache Boost 缓存加速
  * Plugin URI:        https://guohao.asia
  * Description:       把 WP Super Cache 的页面静态化缓存与 Autoptimize 的前端资源优化整合为一个插件：磁盘静态 HTML 缓存 + advanced-cache drop-in + CSS/JS 合并压缩 + 原生图片懒加载 + 缓存预加载。
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            郭浩
@@ -23,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HCB_VERSION', '1.0.0' );
+define( 'HCB_VERSION', '1.1.0' );
 define( 'HCB_FILE', __FILE__ );
 define( 'HCB_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -35,6 +35,8 @@ require_once HCB_DIR . 'includes/class-hcb-minifier.php';
 require_once HCB_DIR . 'includes/class-hcb-assets.php';
 require_once HCB_DIR . 'includes/class-hcb-output.php';
 require_once HCB_DIR . 'includes/class-hcb-cron.php';
+require_once HCB_DIR . 'includes/class-hcb-purge.php';
+require_once HCB_DIR . 'includes/class-hcb-cli.php';
 require_once HCB_DIR . 'includes/class-hcb-admin.php';
 
 register_activation_hook( __FILE__, array( 'HCB_Plugin', 'activate' ) );
@@ -58,7 +60,13 @@ final class HCB_Plugin {
 
 		HCB_Output::init();
 		HCB_Page_Cache::register_hooks();
-		HCB_Cron::register_hooks();
+HCB_Cron::register_hooks();
+
+		add_action( 'admin_bar_menu', array( 'HCB_Purge', 'bar_menu' ), 100 );
+
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			HCB_CLI::register();
+		}
 
 		if ( is_admin() ) {
 			HCB_Admin::init();

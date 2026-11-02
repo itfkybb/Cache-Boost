@@ -16,6 +16,7 @@ class HCB_Cron {
 
 	const HOOK_CLEANUP  = 'hcb_cleanup';
 	const HOOK_PRELOAD  = 'hcb_preload';
+	const HOOK_REFRESH  = 'hcb_refresh';
 	const SCHEDULE_NAME = 'hcb_five_minutes';
 
 	/**
@@ -27,6 +28,7 @@ class HCB_Cron {
 		add_filter( 'cron_schedules', array( __CLASS__, 'add_schedule' ) ); // phpcs:ignore WordPress.WP.CronInterval.ChangeDetected
 		add_action( self::HOOK_CLEANUP, array( 'HCB_Page_Cache', 'clean_expired' ) );
 		add_action( self::HOOK_PRELOAD, array( __CLASS__, 'run_preload' ) );
+		add_action( self::HOOK_REFRESH, array( __CLASS__, 'refresh_expiring' ) );
 	}
 
 	/**
@@ -58,6 +60,10 @@ class HCB_Cron {
 			wp_schedule_event( time() + 300, 'hourly', self::HOOK_CLEANUP );
 		}
 
+		if ( ! wp_next_scheduled( self::HOOK_REFRESH ) ) {
+			wp_schedule_event( time() + 240, self::SCHEDULE_NAME, self::HOOK_REFRESH );
+		}
+
 		self::sync_preload_event();
 	}
 
@@ -85,6 +91,106 @@ class HCB_Cron {
 	public static function unschedule() {
 		wp_clear_scheduled_hook( self::HOOK_CLEANUP );
 		wp_clear_scheduled_hook( self::HOOK_PRELOAD );
+		wp_clear_scheduled_hook( self::HOOK_REFRESH );
+	}
+
+	/**
+	 * 非阻塞请求一组 URL（用于预热）。
+	 *
+	 * @param array $urls URL 列表。
+	 * @return int 实际发出的请求数。
+	 */
+	public static function warm( $urls ) {
+		$count = 0;
+
+		foreach ( (array) $urls as $url ) {
+			$url = is_string( $url ) ? trim( $url ) : '';
+			if ( '' === $url ) {
+				continue;
+			}
+
+			$response = wp_remote_get(
+				$url,
+				array(
+					'blocking'  => false,
+					'timeout'   => 1,
+					'sslverify' => false,
+					'headers'   => array(
+						'X-HCB-Preload' => '1',
+						'X-HCB-Rebuild' => '1',
+						'Cache-Control' => 'no-cache',
+					),
+				)
+			);
+
+			if ( ! is_wp_error( $response ) ) {
+				++$count;
+			}
+		}
+
+		return $count;
+	}
+
+	/**
+	 * 临期页面提前重建。
+	 *
+	 * 在缓存到期前（默认剩余 20% 时）主动重建，使过期瞬间不会落到冷启动。
+	 * 效果等同 stale-while-revalidate，但不改命中路径，也不产生回源风暴。
+	 *
+	 * @param int $limit 每轮最多重建几页。
+	 * @return int 实际发出的请求数。
+	 */
+	public static function refresh_expiring( $limit = 3 ) {
+		if ( ! HCB_Settings::get( 'cache_enabled' ) ) {
+			return 0;
+		}
+
+		$ttl = (int) HCB_Settings::get( 'cache_ttl', 3600 );
+		if ( $ttl < 300 ) {
+			return 0;
+		}
+
+		$dir   = HCB_Settings::page_dir();
+		$items = @scandir( $dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		if ( ! is_array( $items ) ) {
+			return 0;
+		}
+
+		// 随机起点：scandir 顺序固定，不打断的话每次都只重建同一批页面。
+		shuffle( $items );
+
+		$now      = time();
+		$threshold = (int) ( $ttl * 0.8 );
+		$urls     = array();
+
+		foreach ( $items as $item ) {
+			if ( '.' === $item || '..' === $item ) {
+				continue;
+			}
+
+			$html = $dir . '/' . $item . '/index.html';
+			$meta = $dir . '/' . $item . '/meta.php';
+
+			if ( ! file_exists( $html ) || ! file_exists( $meta ) ) {
+				continue;
+			}
+
+			$age = $now - (int) filemtime( $html );
+			if ( $age < $threshold || $age >= $ttl ) {
+				continue;
+			}
+
+			$data = @include $meta; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			if ( is_array( $data ) && ! empty( $data['url'] ) ) {
+				$urls[] = $data['url'];
+			}
+
+			if ( count( $urls ) >= (int) $limit ) {
+				break;
+			}
+		}
+
+		return $urls ? self::warm( $urls ) : 0;
 	}
 
 	/**
@@ -160,6 +266,7 @@ class HCB_Cron {
 					'sslverify'  => false,
 					'headers'    => array(
 						'X-HCB-Preload' => '1',
+						'X-HCB-Rebuild' => '1',
 						'Cache-Control'  => 'no-cache',
 					),
 				)
